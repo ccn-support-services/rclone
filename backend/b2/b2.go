@@ -40,27 +40,30 @@ import (
 )
 
 const (
-	defaultEndpoint     = "https://api.backblazeb2.com"
-	headerPrefix        = "x-bz-info-" // lower case as that is what the server returns
-	timeKey             = "src_last_modified_millis"
-	timeHeader          = headerPrefix + timeKey
-	sha1Key             = "large_file_sha1"
-	sha1Header          = "X-Bz-Content-Sha1"
-	testModeHeader      = "X-Bz-Test-Mode"
-	idHeader            = "X-Bz-File-Id"
-	nameHeader          = "X-Bz-File-Name"
-	timestampHeader     = "X-Bz-Upload-Timestamp"
-	retryAfterHeader    = "Retry-After"
-	minSleep            = 10 * time.Millisecond
-	maxSleep            = 5 * time.Minute
-	decayConstant       = 1 // bigger for slower decay, exponential
-	maxParts            = 10000
-	maxVersions         = 100 // maximum number of versions we search in --b2-versions mode
-	minChunkSize        = 5 * fs.Mebi
-	defaultChunkSize    = 96 * fs.Mebi
-	defaultUploadCutoff = 200 * fs.Mebi
-	largeFileCopyCutoff = 4 * fs.Gibi // 5E9 is the max
-	defaultMaxAge       = 24 * time.Hour
+	defaultEndpoint                         = "https://api.backblazeb2.com"
+	headerPrefix                            = "x-bz-info-" // lower case as that is what the server returns
+	timeKey                                 = "src_last_modified_millis"
+	timeHeader                              = headerPrefix + timeKey
+	sha1Key                                 = "large_file_sha1"
+	sha1Header                              = "X-Bz-Content-Sha1"
+	testModeHeader                          = "X-Bz-Test-Mode"
+	idHeader                                = "X-Bz-File-Id"
+	nameHeader                              = "X-Bz-File-Name"
+	timestampHeader                         = "X-Bz-Upload-Timestamp"
+	retryAfterHeader                        = "Retry-After"
+	fileRetentionModeHeader                 = "X-Bz-File-Retention-Mode"
+	fileRetentionRetainUntilTimestampHeader = "X-Bz-File-Retention-Retain-Until-Timestamp"
+	fileLegalHoldHeader                     = "X-Bz-File-Legal-Hold"
+	minSleep                                = 10 * time.Millisecond
+	maxSleep                                = 5 * time.Minute
+	decayConstant                           = 1 // bigger for slower decay, exponential
+	maxParts                                = 10000
+	maxVersions                             = 100 // maximum number of versions we search in --b2-versions mode
+	minChunkSize                            = 5 * fs.Mebi
+	defaultChunkSize                        = 96 * fs.Mebi
+	defaultUploadCutoff                     = 200 * fs.Mebi
+	largeFileCopyCutoff                     = 4 * fs.Gibi // 5E9 is the max
+	defaultMaxAge                           = 24 * time.Hour
 )
 
 // Globals
@@ -106,6 +109,54 @@ in the [b2 integrations checklist](https://www.backblaze.com/b2/docs/integration
 			Default:  "",
 			Hide:     fs.OptionHideConfigurator,
 			Advanced: true,
+		}, {
+			Name:     "retention_mode",
+			Help:     "Specify retention mode: compliance|governance|null",
+			Default:  "governance",
+			Advanced: true,
+			Examples: []fs.OptionExample{
+				{
+					Value: "governance",
+					Help:  "Set retention to 'governance' mode",
+				},
+				{
+					Value: "compliance",
+					Help:  "Set retention to 'compliance' mode",
+				},
+				{
+					Value: "null",
+					Help:  "Set retention to 'null'",
+				},
+			},
+		}, {
+			Name:     "retention_bypass_governance",
+			Help:     "Bypass file retention governance",
+			Default:  false,
+			Advanced: true,
+		}, {
+			Name:     "relative_retention_millis",
+			Help:     "Retention period will be extended by this amount (in milliseconds)",
+			Default:  0,
+			Advanced: true,
+		}, {
+			Name:     "absolute_retention_millis",
+			Help:     "Absolute timestamp of retention expiration, in milliseconds",
+			Default:  0,
+			Advanced: true,
+		}, {
+			Name:     "legal_hold",
+			Help:     "Legal hold status",
+			Advanced: true,
+			Examples: []fs.OptionExample{
+				{
+					Value: "off",
+					Help:  "Set legal hold status to 'off'",
+				},
+				{
+					Value: "on",
+					Help:  "Set legal hold status to 'on'",
+				},
+			},
 		}, {
 			Name:     "versions",
 			Help:     "Include old versions in directory listings.\n\nNote that when using this no file write operations are permitted,\nso you can't upload files or delete them.",
@@ -272,6 +323,11 @@ type Options struct {
 	DownloadAuthorizationDuration fs.Duration          `config:"download_auth_duration"`
 	Lifecycle                     int                  `config:"lifecycle"`
 	Enc                           encoder.MultiEncoder `config:"encoding"`
+	RetentionMode                 string               `config:"retention_mode"`
+	RetentionBypassGovernance     bool                 `config:"retention_bypass_governance"`
+	RelativeRetentionMillis       int64                `config:"relative_retention_millis"`
+	AbsoluteRetentionMillis       int64                `config:"absolute_retention_millis"`
+	LegalHold                     string               `config:"legal_hold"`
 }
 
 // Fs represents a remote b2 server
@@ -802,6 +858,19 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 				if file.Name == lastFileName {
 					// Ignore versions before the already returned version
 					continue
+				}
+			}
+
+			if (f.opt.AbsoluteRetentionMillis > 0 || f.opt.RelativeRetentionMillis > 0) && f.opt.RetentionMode != "" {
+				err = f.UpdateRetention(ctx, file)
+				if err != nil {
+					return err
+				}
+			}
+			if f.opt.LegalHold != "" {
+				err = f.UpdateLegalHold(ctx, file)
+				if err != nil {
+					return err
 				}
 			}
 
@@ -1407,6 +1476,25 @@ func (f *Fs) copy(ctx context.Context, dstObj *Object, srcObj *Object, newInfo *
 		request.ContentType = newInfo.ContentType
 		request.Info = newInfo.Info
 	}
+
+	var retentionSettings api.FileRetentionSettings
+	if f.opt.RetentionMode != "" && (f.opt.AbsoluteRetentionMillis > 0 || f.opt.RelativeRetentionMillis > 0) {
+		var retentionTimestamp int64
+		if f.opt.RelativeRetentionMillis > 0 {
+			retentionTimestamp = time.Now().UTC().UnixMilli() + f.opt.RelativeRetentionMillis
+		}
+		if f.opt.AbsoluteRetentionMillis > 0 {
+			retentionTimestamp = f.opt.AbsoluteRetentionMillis
+		}
+		retentionSettings.Mode = f.opt.RetentionMode
+		retentionSettings.RetentionTimestamp = retentionTimestamp
+		request.FileRetention = retentionSettings
+	}
+
+	if f.opt.LegalHold != "" {
+		request.LegalHold = f.opt.LegalHold
+	}
+
 	var response api.FileInfo
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, &request, &response)
@@ -1657,6 +1745,63 @@ func (o *Object) getMetaDataListing(ctx context.Context) (info *api.File, err er
 	return info, nil
 }
 
+// Update retention settings
+func (f *Fs) UpdateRetention(ctx context.Context, info *api.File) (err error) {
+	o := &Object{
+		fs: f,
+	}
+	var retentionTimestamp int64
+	if f.opt.RelativeRetentionMillis > 0 {
+		retentionTimestamp = time.Now().UTC().UnixMilli() + f.opt.RelativeRetentionMillis
+	}
+	if f.opt.AbsoluteRetentionMillis > 0 {
+		retentionTimestamp = f.opt.AbsoluteRetentionMillis
+	}
+	var retentionSettings = api.FileRetentionSettings{
+		RetentionTimestamp: retentionTimestamp,
+		Mode:               f.opt.RetentionMode,
+	}
+	var request = api.UpdateRetentionRequest{
+		ID:               info.ID,
+		Name:             info.Name,
+		FileRetention:    retentionSettings,
+		BypassGovernance: f.opt.RetentionBypassGovernance,
+	}
+	opts := rest.Opts{
+		Method:  "POST",
+		RootURL: f.info.APIURL + "/b2api/v3",
+		Path:    "/b2_update_file_retention",
+	}
+	var response api.FileInfo
+	err = f.pacer.Call(func() (bool, error) {
+		resp, err := f.srv.CallJSON(ctx, &opts, &request, &response)
+		return f.shouldRetry(ctx, resp, err)
+	})
+	return o.decodeMetaDataFileInfo(&response)
+}
+
+func (f *Fs) UpdateLegalHold(ctx context.Context, info *api.File) (err error) {
+	o := &Object{
+		fs: f,
+	}
+	var request = api.UpdateLegalHoldRequest{
+		ID:        info.ID,
+		Name:      info.Name,
+		LegalHold: f.opt.LegalHold,
+	}
+	opts := rest.Opts{
+		Method:  "POST",
+		RootURL: f.info.APIURL + "/b2api/v3",
+		Path:    "/b2_update_file_legal_hold",
+	}
+	var response api.FileInfo
+	err = f.pacer.Call(func() (bool, error) {
+		resp, err := f.srv.CallJSON(ctx, &opts, &request, &response)
+		return f.shouldRetry(ctx, resp, err)
+	})
+	return o.decodeMetaDataFileInfo(&response)
+}
+
 // getMetaData gets the metadata from the object unconditionally
 func (o *Object) getMetaData(ctx context.Context) (info *api.File, err error) {
 	// If using versions and have a version suffix, need to list the directory to find the correct versions
@@ -1667,6 +1812,20 @@ func (o *Object) getMetaData(ctx context.Context) (info *api.File, err error) {
 		}
 	}
 	_, info, err = o.getOrHead(ctx, "HEAD", nil)
+	if info != nil {
+		if (o.fs.opt.AbsoluteRetentionMillis > 0 || o.fs.opt.RelativeRetentionMillis > 0) && o.fs.opt.RetentionMode != "" {
+			err = o.fs.UpdateRetention(ctx, info)
+			if err != nil {
+				return info, err
+			}
+		}
+		if o.fs.opt.LegalHold != "" {
+			err = o.fs.UpdateLegalHold(ctx, info)
+			if err != nil {
+				return info, err
+			}
+		}
+	}
 	return info, err
 }
 
@@ -1851,6 +2010,17 @@ func (o *Object) getOrHead(ctx context.Context, method string, options []fs.Open
 			}
 		}
 	}
+
+	fileRetentionRetainUntilTimestamp, err := strconv.ParseInt(resp.Header.Get(fileRetentionRetainUntilTimestampHeader), 10, 64)
+	if err != nil {
+		fs.Debugf(o, "Bad "+fileRetentionRetainUntilTimestampHeader+" header: %v", err)
+	}
+
+	fileRetention := api.FileRetentionSettings{
+		RetentionTimestamp: fileRetentionRetainUntilTimestamp,
+		Mode:               resp.Header.Get(fileRetentionModeHeader),
+	}
+
 	info = &api.File{
 		ID:              resp.Header.Get(idHeader),
 		Name:            resp.Header.Get(nameHeader),
@@ -1860,6 +2030,8 @@ func (o *Object) getOrHead(ctx context.Context, method string, options []fs.Open
 		SHA1:            resp.Header.Get(sha1Header),
 		ContentType:     resp.Header.Get("Content-Type"),
 		Info:            Info,
+		LegalHold:       resp.Header.Get(fileLegalHoldHeader),
+		FileRetention:   fileRetention,
 	}
 	// When reading files from B2 via cloudflare using
 	// --b2-download-url cloudflare strips the Content-Length
@@ -2076,6 +2248,20 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 			timeHeader:       timeString(modTime),
 		},
 		ContentLength: &size,
+	}
+	var retentionTimestamp int64
+	if o.fs.opt.RelativeRetentionMillis > 0 {
+		retentionTimestamp = time.Now().UnixMilli() + o.fs.opt.RelativeRetentionMillis
+	}
+	if o.fs.opt.AbsoluteRetentionMillis > 0 {
+		retentionTimestamp = o.fs.opt.AbsoluteRetentionMillis
+	}
+	if o.fs.opt.RetentionMode != "" && retentionTimestamp > 0 {
+		opts.ExtraHeaders[fileRetentionModeHeader] = o.fs.opt.RetentionMode
+		opts.ExtraHeaders[fileRetentionRetainUntilTimestampHeader] = strconv.FormatInt(retentionTimestamp, 10)
+	}
+	if o.fs.opt.LegalHold != "" {
+		opts.ExtraHeaders[fileLegalHoldHeader] = o.fs.opt.LegalHold
 	}
 	var response api.FileInfo
 	// Don't retry, return a retry error instead

@@ -47,6 +47,23 @@ type LifecycleRule struct {
 	FileNamePrefix            string `json:"fileNamePrefix"`
 }
 
+// FileRetentionSettings
+type FileRetentionSettings struct {
+	Mode               string `json:"mode" validate:"governance|compliance|null"`
+	RetentionTimestamp int64  `json:"retainUntilTimestamp,omitempty"`
+}
+
+type FileRetentionSettingsResponse struct {
+	IsClientAuthorizedToRead *bool                 `json:"isClientAuthorizedToRead"`
+	Value                    FileRetentionSettings `json:"value"`
+}
+
+// LegalHoldSettings
+type LegalHoldSettings struct {
+	IsClientAuthorizedToRead bool   `json:"isClientAuthorizedToRead"`
+	Value                    string `json:"value"`
+}
+
 // Timestamp is a UTC time when this file was uploaded. It is a base
 // 10 number of milliseconds since midnight, January 1, 1970 UTC. This
 // fits in a 64 bit integer such as the type "long" in the programming
@@ -114,14 +131,16 @@ func (t Timestamp) Equal(s Timestamp) bool {
 
 // File is info about a file
 type File struct {
-	ID              string            `json:"fileId"`          // The unique identifier for this version of this file. Used with b2_get_file_info, b2_download_file_by_id, and b2_delete_file_version.
-	Name            string            `json:"fileName"`        // The name of this file, which can be used with b2_download_file_by_name.
-	Action          string            `json:"action"`          // Either "upload" or "hide". "upload" means a file that was uploaded to B2 Cloud Storage. "hide" means a file version marking the file as hidden, so that it will not show up in b2_list_file_names. The result of b2_list_file_names will contain only "upload". The result of b2_list_file_versions may have both.
-	Size            int64             `json:"size"`            // The number of bytes in the file.
-	UploadTimestamp Timestamp         `json:"uploadTimestamp"` // This is a UTC time when this file was uploaded.
-	SHA1            string            `json:"contentSha1"`     // The SHA1 of the bytes stored in the file.
-	ContentType     string            `json:"contentType"`     // The MIME type of the file.
-	Info            map[string]string `json:"fileInfo"`        // The custom information that was uploaded with the file. This is a JSON object, holding the name/value pairs that were uploaded with the file.
+	ID              string                `json:"fileId"`                  // The unique identifier for this version of this file. Used with b2_get_file_info, b2_download_file_by_id, and b2_delete_file_version.
+	Name            string                `json:"fileName"`                // The name of this file, which can be used with b2_download_file_by_name.
+	Action          string                `json:"action"`                  // Either "upload" or "hide". "upload" means a file that was uploaded to B2 Cloud Storage. "hide" means a file version marking the file as hidden, so that it will not show up in b2_list_file_names. The result of b2_list_file_names will contain only "upload". The result of b2_list_file_versions may have both.
+	Size            int64                 `json:"size"`                    // The number of bytes in the file.
+	UploadTimestamp Timestamp             `json:"uploadTimestamp"`         // This is a UTC time when this file was uploaded.
+	SHA1            string                `json:"contentSha1"`             // The SHA1 of the bytes stored in the file.
+	ContentType     string                `json:"contentType"`             // The MIME type of the file.
+	Info            map[string]string     `json:"fileInfo"`                // The custom information that was uploaded with the file. This is a JSON object, holding the name/value pairs that were uploaded with the file.
+	FileRetention   FileRetentionSettings `json:"fileRetention,omitempty"` // File retention settings
+	LegalHold       string                `json:"legalHold,omitempty"`     // File legal hold status
 }
 
 // AuthorizeAccountResponse is as returned from the b2_authorize_account call
@@ -200,16 +219,18 @@ type GetDownloadAuthorizationResponse struct {
 
 // FileInfo is received from b2_upload_file, b2_get_file_info and b2_finish_large_file
 type FileInfo struct {
-	ID              string            `json:"fileId"`          // The unique identifier for this version of this file. Used with b2_get_file_info, b2_download_file_by_id, and b2_delete_file_version.
-	Name            string            `json:"fileName"`        // The name of this file, which can be used with b2_download_file_by_name.
-	Action          string            `json:"action"`          // Either "upload" or "hide". "upload" means a file that was uploaded to B2 Cloud Storage. "hide" means a file version marking the file as hidden, so that it will not show up in b2_list_file_names. The result of b2_list_file_names will contain only "upload". The result of b2_list_file_versions may have both.
-	AccountID       string            `json:"accountId"`       // Your account ID.
-	BucketID        string            `json:"bucketId"`        // The bucket that the file is in.
-	Size            int64             `json:"contentLength"`   // The number of bytes stored in the file.
-	UploadTimestamp Timestamp         `json:"uploadTimestamp"` // This is a UTC time when this file was uploaded.
-	SHA1            string            `json:"contentSha1"`     // The SHA1 of the bytes stored in the file.
-	ContentType     string            `json:"contentType"`     // The MIME type of the file.
-	Info            map[string]string `json:"fileInfo"`        // The custom information that was uploaded with the file. This is a JSON object, holding the name/value pairs that were uploaded with the file.
+	ID              string                        `json:"fileId"`                  // The unique identifier for this version of this file. Used with b2_get_file_info, b2_download_file_by_id, and b2_delete_file_version.
+	Name            string                        `json:"fileName"`                // The name of this file, which can be used with b2_download_file_by_name.
+	Action          string                        `json:"action"`                  // Either "upload" or "hide". "upload" means a file that was uploaded to B2 Cloud Storage. "hide" means a file version marking the file as hidden, so that it will not show up in b2_list_file_names. The result of b2_list_file_names will contain only "upload". The result of b2_list_file_versions may have both.
+	AccountID       string                        `json:"accountId"`               // Your account ID.
+	BucketID        string                        `json:"bucketId"`                // The bucket that the file is in.
+	Size            int64                         `json:"contentLength"`           // The number of bytes stored in the file.
+	UploadTimestamp Timestamp                     `json:"uploadTimestamp"`         // This is a UTC time when this file was uploaded.
+	SHA1            string                        `json:"contentSha1"`             // The SHA1 of the bytes stored in the file.
+	ContentType     string                        `json:"contentType"`             // The MIME type of the file.
+	Info            map[string]string             `json:"fileInfo"`                // The custom information that was uploaded with the file. This is a JSON object, holding the name/value pairs that were uploaded with the file.
+	FileRetention   FileRetentionSettingsResponse `json:"fileRetention,omitempty"` // File retention settings (response)
+	LegalHold       LegalHoldSettings             `json:"legalHold,omitempty"`     // File legal hold status
 }
 
 // CreateBucketRequest is used to create a bucket
@@ -260,21 +281,25 @@ type GetFileInfoRequest struct {
 //
 // Example: { "src_last_modified_millis" : "1452802803026", "large_file_sha1" : "a3195dc1e7b46a2ff5da4b3c179175b75671e80d", "color": "blue" }
 type StartLargeFileRequest struct {
-	BucketID    string            `json:"bucketId"`    //The ID of the bucket that the file will go in.
-	Name        string            `json:"fileName"`    // The name of the file. See Files for requirements on file names.
-	ContentType string            `json:"contentType"` // The MIME type of the content of the file, which will be returned in the Content-Type header when downloading the file. Use the Content-Type b2/x-auto to automatically set the stored Content-Type post upload. In the case where a file extension is absent or the lookup fails, the Content-Type is set to application/octet-stream.
-	Info        map[string]string `json:"fileInfo"`    // A JSON object holding the name/value pairs for the custom file info.
+	BucketID      string                `json:"bucketId"`                              //The ID of the bucket that the file will go in.
+	Name          string                `json:"fileName"`                              // The name of the file. See Files for requirements on file names.
+	ContentType   string                `json:"contentType"`                           // The MIME type of the content of the file, which will be returned in the Content-Type header when downloading the file. Use the Content-Type b2/x-auto to automatically set the stored Content-Type post upload. In the case where a file extension is absent or the lookup fails, the Content-Type is set to application/octet-stream.
+	Info          map[string]string     `json:"fileInfo"`                              // A JSON object holding the name/value pairs for the custom file info.
+	FileRetention FileRetentionSettings `json:"fileRetention,omitempty"`               // File retention settings
+	LegalHold     string                `json:"legalHold,omitempty" validate:"on|off"` // File legal hold status
 }
 
 // StartLargeFileResponse is the response to StartLargeFileRequest
 type StartLargeFileResponse struct {
-	ID              string            `json:"fileId"`          // The unique identifier for this version of this file. Used with b2_get_file_info, b2_download_file_by_id, and b2_delete_file_version.
-	Name            string            `json:"fileName"`        // The name of this file, which can be used with b2_download_file_by_name.
-	AccountID       string            `json:"accountId"`       // The identifier for the account.
-	BucketID        string            `json:"bucketId"`        // The unique ID of the bucket.
-	ContentType     string            `json:"contentType"`     // The MIME type of the file.
-	Info            map[string]string `json:"fileInfo"`        // The custom information that was uploaded with the file. This is a JSON object, holding the name/value pairs that were uploaded with the file.
-	UploadTimestamp Timestamp         `json:"uploadTimestamp"` // This is a UTC time when this file was uploaded.
+	ID              string                `json:"fileId"`                  // The unique identifier for this version of this file. Used with b2_get_file_info, b2_download_file_by_id, and b2_delete_file_version.
+	Name            string                `json:"fileName"`                // The name of this file, which can be used with b2_download_file_by_name.
+	AccountID       string                `json:"accountId"`               // The identifier for the account.
+	BucketID        string                `json:"bucketId"`                // The unique ID of the bucket.
+	ContentType     string                `json:"contentType"`             // The MIME type of the file.
+	Info            map[string]string     `json:"fileInfo"`                // The custom information that was uploaded with the file. This is a JSON object, holding the name/value pairs that were uploaded with the file.
+	UploadTimestamp Timestamp             `json:"uploadTimestamp"`         // This is a UTC time when this file was uploaded.
+	FileRetention   FileRetentionSettings `json:"fileRetention,omitempty"` // File retention settings
+	LegalHold       LegalHoldSettings     `json:"legalHold,omitempty"`     // File legal hold status
 }
 
 // GetUploadPartURLRequest is passed to b2_get_upload_part_url
@@ -322,15 +347,32 @@ type CancelLargeFileResponse struct {
 	BucketID  string `json:"bucketId"`  // The unique ID of the bucket.
 }
 
+// UpdateRetentionRequest is passed to b2_update_file_retention
+type UpdateRetentionRequest struct {
+	ID               string                `json:"fileId"`
+	Name             string                `json:"fileName"`
+	FileRetention    FileRetentionSettings `json:"fileRetention"`
+	BypassGovernance bool                  `json:"bypassGovernance,omitempty"`
+}
+
+// UpdateLegalHoldRequest is passed to b2_update_file_legal_hold
+type UpdateLegalHoldRequest struct {
+	ID        string `json:"fileId"`
+	Name      string `json:"fileName"`
+	LegalHold string `json:"legalHold,omitempty" validate:"on|off"`
+}
+
 // CopyFileRequest is as passed to b2_copy_file
 type CopyFileRequest struct {
-	SourceID          string            `json:"sourceFileId"`                  // The ID of the source file being copied.
-	Name              string            `json:"fileName"`                      // The name of the new file being created.
-	Range             string            `json:"range,omitempty"`               // The range of bytes to copy. If not provided, the whole source file will be copied.
-	MetadataDirective string            `json:"metadataDirective,omitempty"`   // The strategy for how to populate metadata for the new file: COPY or REPLACE
-	ContentType       string            `json:"contentType,omitempty"`         // The MIME type of the content of the file (REPLACE only)
-	Info              map[string]string `json:"fileInfo,omitempty"`            // This field stores the metadata that will be stored with the file. (REPLACE only)
-	DestBucketID      string            `json:"destinationBucketId,omitempty"` // The destination ID of the bucket if set, if not the source bucket will be used
+	SourceID          string                `json:"sourceFileId"`                          // The ID of the source file being copied.
+	Name              string                `json:"fileName"`                              // The name of the new file being created.
+	Range             string                `json:"range,omitempty"`                       // The range of bytes to copy. If not provided, the whole source file will be copied.
+	MetadataDirective string                `json:"metadataDirective,omitempty"`           // The strategy for how to populate metadata for the new file: COPY or REPLACE
+	ContentType       string                `json:"contentType,omitempty"`                 // The MIME type of the content of the file (REPLACE only)
+	Info              map[string]string     `json:"fileInfo,omitempty"`                    // This field stores the metadata that will be stored with the file. (REPLACE only)
+	DestBucketID      string                `json:"destinationBucketId,omitempty"`         // The destination ID of the bucket if set, if not the source bucket will be used
+	FileRetention     FileRetentionSettings `json:"fileRetention,omitempty"`               // File retention settings
+	LegalHold         string                `json:"legalHold,omitempty" validate:"on|off"` // File legal hold status
 }
 
 // CopyPartRequest is the request for b2_copy_part - the response is UploadPartResponse
