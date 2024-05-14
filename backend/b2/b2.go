@@ -2011,16 +2011,6 @@ func (o *Object) getOrHead(ctx context.Context, method string, options []fs.Open
 		}
 	}
 
-	fileRetentionRetainUntilTimestamp, err := strconv.ParseInt(resp.Header.Get(fileRetentionRetainUntilTimestampHeader), 10, 64)
-	if err != nil {
-		fs.Debugf(o, "Bad "+fileRetentionRetainUntilTimestampHeader+" header: %v", err)
-	}
-
-	fileRetention := api.FileRetentionSettings{
-		RetentionTimestamp: fileRetentionRetainUntilTimestamp,
-		Mode:               resp.Header.Get(fileRetentionModeHeader),
-	}
-
 	info = &api.File{
 		ID:              resp.Header.Get(idHeader),
 		Name:            resp.Header.Get(nameHeader),
@@ -2030,9 +2020,24 @@ func (o *Object) getOrHead(ctx context.Context, method string, options []fs.Open
 		SHA1:            resp.Header.Get(sha1Header),
 		ContentType:     resp.Header.Get("Content-Type"),
 		Info:            Info,
-		LegalHold:       resp.Header.Get(fileLegalHoldHeader),
-		FileRetention:   fileRetention,
 	}
+
+	fileRetentionRetainUntilTimestamp, err := strconv.ParseInt(resp.Header.Get(fileRetentionRetainUntilTimestampHeader), 10, 64)
+	if err != nil {
+		fs.Debugf(o, "Bad (or missing) "+fileRetentionRetainUntilTimestampHeader+" header: %v", err)
+	} else {
+		fileRetention := api.FileRetentionSettings{
+			RetentionTimestamp: fileRetentionRetainUntilTimestamp,
+			Mode:               resp.Header.Get(fileRetentionModeHeader),
+		}
+		info.FileRetention = fileRetention
+	}
+
+	legalHold := resp.Header.Get(fileLegalHoldHeader)
+	if legalHold != "" {
+		info.LegalHold = legalHold
+	}
+
 	// When reading files from B2 via cloudflare using
 	// --b2-download-url cloudflare strips the Content-Length
 	// headers (presumably so it can inject stuff) so use the old
