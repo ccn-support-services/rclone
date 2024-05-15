@@ -110,10 +110,8 @@ in the [b2 integrations checklist](https://www.backblaze.com/b2/docs/integration
 			Hide:     fs.OptionHideConfigurator,
 			Advanced: true,
 		}, {
-			Name:     "retention_mode",
-			Help:     "Specify retention mode: compliance|governance|null",
-			Default:  "governance",
-			Advanced: true,
+			Name: "retention_mode",
+			Help: "Specify retention mode: compliance|governance|null",
 			Examples: []fs.OptionExample{
 				{
 					Value: "governance",
@@ -125,28 +123,18 @@ in the [b2 integrations checklist](https://www.backblaze.com/b2/docs/integration
 				},
 				{
 					Value: "null",
-					Help:  "Set retention to 'null'",
+					Help:  "Set retention to 'null'. This will attempt to remove retention settings (requires 'bypassGovernance' application key capability).",
 				},
 			},
 		}, {
-			Name:     "retention_bypass_governance",
-			Help:     "Bypass file retention governance",
-			Default:  false,
-			Advanced: true,
+			Name: "relative_retention_millis",
+			Help: "Retention period will be extended by this amount (in milliseconds)",
 		}, {
-			Name:     "relative_retention_millis",
-			Help:     "Retention period will be extended by this amount (in milliseconds)",
-			Default:  0,
-			Advanced: true,
+			Name: "absolute_retention_millis",
+			Help: "Absolute timestamp of retention expiration, in milliseconds",
 		}, {
-			Name:     "absolute_retention_millis",
-			Help:     "Absolute timestamp of retention expiration, in milliseconds",
-			Default:  0,
-			Advanced: true,
-		}, {
-			Name:     "legal_hold",
-			Help:     "Legal hold status",
-			Advanced: true,
+			Name: "legal_hold",
+			Help: "Legal hold status",
 			Examples: []fs.OptionExample{
 				{
 					Value: "off",
@@ -324,7 +312,6 @@ type Options struct {
 	Lifecycle                     int                  `config:"lifecycle"`
 	Enc                           encoder.MultiEncoder `config:"encoding"`
 	RetentionMode                 string               `config:"retention_mode"`
-	RetentionBypassGovernance     bool                 `config:"retention_bypass_governance"`
 	RelativeRetentionMillis       int64                `config:"relative_retention_millis"`
 	AbsoluteRetentionMillis       int64                `config:"absolute_retention_millis"`
 	LegalHold                     string               `config:"legal_hold"`
@@ -861,14 +848,14 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 				}
 			}
 
-			if (f.opt.AbsoluteRetentionMillis > 0 || f.opt.RelativeRetentionMillis > 0) && f.opt.RetentionMode != "" {
-				err = f.UpdateRetention(ctx, file)
+			if f.opt.LegalHold != "" {
+				err = f.UpdateLegalHold(ctx, file)
 				if err != nil {
 					return err
 				}
 			}
-			if f.opt.LegalHold != "" {
-				err = f.UpdateLegalHold(ctx, file)
+			if f.opt.RetentionMode != "" || (f.opt.AbsoluteRetentionMillis > 0 || f.opt.RelativeRetentionMillis > 0) {
+				err = f.UpdateRetention(ctx, file)
 				if err != nil {
 					return err
 				}
@@ -1478,7 +1465,7 @@ func (f *Fs) copy(ctx context.Context, dstObj *Object, srcObj *Object, newInfo *
 	}
 
 	var retentionSettings api.FileRetentionSettings
-	if f.opt.RetentionMode != "" && (f.opt.AbsoluteRetentionMillis > 0 || f.opt.RelativeRetentionMillis > 0) {
+	if f.opt.RetentionMode != "" {
 		var retentionTimestamp int64
 		if f.opt.RelativeRetentionMillis > 0 {
 			retentionTimestamp = time.Now().UTC().UnixMilli() + f.opt.RelativeRetentionMillis
@@ -1486,9 +1473,15 @@ func (f *Fs) copy(ctx context.Context, dstObj *Object, srcObj *Object, newInfo *
 		if f.opt.AbsoluteRetentionMillis > 0 {
 			retentionTimestamp = f.opt.AbsoluteRetentionMillis
 		}
-		retentionSettings.Mode = f.opt.RetentionMode
-		retentionSettings.RetentionTimestamp = retentionTimestamp
+
+		retentionSettings.Mode = &f.opt.RetentionMode
+		if retentionTimestamp > 0 {
+			retentionSettings.RetentionTimestamp = retentionTimestamp
+		}
 		request.FileRetention = retentionSettings
+		if retentionSettings.Mode == nil {
+			request.BypassGovernance = true
+		}
 	}
 
 	if f.opt.LegalHold != "" {
@@ -1757,16 +1750,30 @@ func (f *Fs) UpdateRetention(ctx context.Context, info *api.File) (err error) {
 	if f.opt.AbsoluteRetentionMillis > 0 {
 		retentionTimestamp = f.opt.AbsoluteRetentionMillis
 	}
+	retentionMode := "governance"
+	if f.opt.RetentionMode != "" && f.opt.RetentionMode != "null" {
+		retentionMode = f.opt.RetentionMode
+	}
 	var retentionSettings = api.FileRetentionSettings{
-		RetentionTimestamp: retentionTimestamp,
-		Mode:               f.opt.RetentionMode,
+		Mode: &retentionMode,
 	}
+	if f.opt.RetentionMode == "null" {
+		retentionSettings.Mode = nil
+	}
+	if retentionTimestamp > 0 && retentionSettings.Mode != nil {
+		retentionSettings.RetentionTimestamp = retentionTimestamp
+	}
+
 	var request = api.UpdateRetentionRequest{
-		ID:               info.ID,
-		Name:             info.Name,
-		FileRetention:    retentionSettings,
-		BypassGovernance: f.opt.RetentionBypassGovernance,
+		ID:            info.ID,
+		Name:          info.Name,
+		FileRetention: retentionSettings,
 	}
+
+	if retentionSettings.Mode == nil {
+		request.BypassGovernance = true
+	}
+
 	opts := rest.Opts{
 		Method:  "POST",
 		RootURL: f.info.APIURL + "/b2api/v3",
@@ -1813,14 +1820,14 @@ func (o *Object) getMetaData(ctx context.Context) (info *api.File, err error) {
 	}
 	_, info, err = o.getOrHead(ctx, "HEAD", nil)
 	if info != nil {
-		if (o.fs.opt.AbsoluteRetentionMillis > 0 || o.fs.opt.RelativeRetentionMillis > 0) && o.fs.opt.RetentionMode != "" {
-			err = o.fs.UpdateRetention(ctx, info)
+		if o.fs.opt.LegalHold != "" {
+			err = o.fs.UpdateLegalHold(ctx, info)
 			if err != nil {
 				return info, err
 			}
 		}
-		if o.fs.opt.LegalHold != "" {
-			err = o.fs.UpdateLegalHold(ctx, info)
+		if o.fs.opt.RetentionMode != "" || (o.fs.opt.AbsoluteRetentionMillis > 0 || o.fs.opt.RelativeRetentionMillis > 0) {
+			err = o.fs.UpdateRetention(ctx, info)
 			if err != nil {
 				return info, err
 			}
@@ -2026,9 +2033,10 @@ func (o *Object) getOrHead(ctx context.Context, method string, options []fs.Open
 	if err != nil {
 		fs.Debugf(o, "Bad (or missing) "+fileRetentionRetainUntilTimestampHeader+" header: %v", err)
 	} else {
+		retentionMode := resp.Header.Get(fileRetentionModeHeader)
 		fileRetention := api.FileRetentionSettings{
 			RetentionTimestamp: fileRetentionRetainUntilTimestamp,
-			Mode:               resp.Header.Get(fileRetentionModeHeader),
+			Mode:               &retentionMode,
 		}
 		info.FileRetention = fileRetention
 	}
@@ -2261,8 +2269,12 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if o.fs.opt.AbsoluteRetentionMillis > 0 {
 		retentionTimestamp = o.fs.opt.AbsoluteRetentionMillis
 	}
-	if o.fs.opt.RetentionMode != "" && retentionTimestamp > 0 {
-		opts.ExtraHeaders[fileRetentionModeHeader] = o.fs.opt.RetentionMode
+	if retentionTimestamp > 0 {
+		retentionMode := o.fs.opt.RetentionMode
+		if retentionMode == "" {
+			retentionMode = "governance"
+		}
+		opts.ExtraHeaders[fileRetentionModeHeader] = retentionMode
 		opts.ExtraHeaders[fileRetentionRetainUntilTimestampHeader] = strconv.FormatInt(retentionTimestamp, 10)
 	}
 	if o.fs.opt.LegalHold != "" {
