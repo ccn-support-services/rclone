@@ -49,8 +49,8 @@ type LifecycleRule struct {
 
 // FileRetentionSettings
 type FileRetentionSettings struct {
-	Mode               string `json:"mode" validate:"governance|compliance|null"`
-	RetentionTimestamp int64  `json:"retainUntilTimestamp,omitempty"`
+	Mode               *string `json:"mode"`
+	RetentionTimestamp int64   `json:"retainUntilTimestamp,omitempty"`
 }
 
 type FileRetentionSettingsResponse struct {
@@ -373,6 +373,7 @@ type CopyFileRequest struct {
 	DestBucketID      string                `json:"destinationBucketId,omitempty"`         // The destination ID of the bucket if set, if not the source bucket will be used
 	FileRetention     FileRetentionSettings `json:"fileRetention,omitempty"`               // File retention settings
 	LegalHold         string                `json:"legalHold,omitempty" validate:"on|off"` // File legal hold status
+	BypassGovernance  bool                  `json:"bypassGovernance,omitempty"`            // Documentation is not clear as to whether or not you can *remove* retention settings when calling b2_copy_file
 }
 
 // CopyPartRequest is the request for b2_copy_part - the response is UploadPartResponse
